@@ -2,21 +2,25 @@
 #include <PS4Controller.h>
 #include <ESP32Servo.h>
 
-#define SERVOR_PIN    18      // change to your pin if needed (e.g., 25)
+#define SERVOR_PIN    18
 #define SERVOL_PIN    21
 
-#define NEUTRAL_US   1530    // stop pulse you calibrated --> (deadzone for servo)
-#define MAX_US       2000    // max pulse (your “up” direction) --> max servo speed
-#define MIN_US       1000    // min pulse (your “down” direction)
-#define DEADZONE     15      // move only if within ±15 is considered neutral
-#define INVERT_STICK true    // PS4 Y is negative when UP; 'true' makes UP positive
+#define NEUTRAL_US   1530   // your calibrated stop pulse --> servo deadzone
+#define MAX_US       2000   // "forward" (increase speed)
+#define MIN_US       1000   // "reverse" (decrease speed)
+#define DEADZONE     15     // |stick| <= DEADZONE => neutral. --> stick deadzone
+#define INVERT_STICK true   // PS4 Y is negative when UP; true makes UP positive
 
 Servo servoR;
 Servo servoL;
 
+static inline bool isNeutral(int v) { return abs(v) <= DEADZONE; }
+
 void setup() {
   Serial.begin(115200);
-  PS4.begin();               // for first pairing you may need PS4.begin("AA:BB:CC:DD:EE:FF")
+
+  // Pairing note: for first-time pairing you may need PS4.begin("AA:BB:CC:DD:EE:FF")
+  PS4.begin();
 
   // ESP32Servo setup
   ESP32PWM::allocateTimer(0);
@@ -24,16 +28,17 @@ void setup() {
   ESP32PWM::allocateTimer(2);
   ESP32PWM::allocateTimer(3);
 
-  servoR.setPeriodHertz(50);   // 50 Hz for hobby servos
-  servoL.setPeriodHertz(50); 
-           
-  servoR.attach(SERVOR_PIN, 1000, 2000); // safe attach range
-  servoL.attach(SERVOL_PIN, 1000, 2000); 
+  servoR.setPeriodHertz(50); // 50 Hz for hobby servos
+  servoL.setPeriodHertz(50);
+
+  // Attach with safe pulse range limits
+  servoR.attach(SERVOR_PIN, 1000, 2000);
+  servoL.attach(SERVOL_PIN, 1000, 2000);
 
   servoR.writeMicroseconds(NEUTRAL_US); // start stopped
   servoL.writeMicroseconds(NEUTRAL_US);
 
-  Serial.println("Ready: Stick UP (>deadzone) -> MAX_US (2000us), else STOP(1530us).");
+  Serial.println("Ready: Both sticks UP/DOWN -> move both. Single stick -> that side only (other must be neutral).");
 }
 
 void loop() {
@@ -44,50 +49,69 @@ void loop() {
     return;
   }
 
-  // Read sticks Y ~ [-128..+127]
+  // Read sticks Y in [-128..+127]
   int stickL = PS4.LStickY();
   int stickR = PS4.RStickY();
 
   // Make UP positive on both sticks if requested
   if (INVERT_STICK) {
-    stickL = -stickL;
-    stickR = -stickR;
+    stickL = stickL;
+    stickR = stickR;
   }
 
-  // Only two states per stick: UP -> MAX_US, DOWN -> MIN_US, else STOP
-  int pulseR;
-  int pulseL;
+  const bool L_neutral = isNeutral(stickL);
+  const bool R_neutral = isNeutral(stickR);
 
-  // neutral tests must be "within" the deadzone, not equality
-  bool L_neutral = (abs(stickL) <= DEADZONE);
-  bool R_neutral = (abs(stickR) <= DEADZONE);
+  int pulseL = -NEUTRAL_US;  // safe defaults
+  int pulseR = -NEUTRAL_US;
 
-  if (!L_neutral && R_neutral && stickL > DEADZONE) {         // left up
-    pulseL = MAX_US;     
+  // -------- Priority 1: BOTH STICKS (drive together) --------
+  if (!L_neutral && !R_neutral) {
+    if (stickL > DEADZONE && stickR > DEADZONE) {
+      // both UP -> forward
+      pulseL = MAX_US;
+      pulseR = MIN_US;
+    } else if (stickL < -DEADZONE && stickR < -DEADZONE) {
+      // both DOWN -> backward
+      pulseL = MIN_US;
+      pulseR = MAX_US;
+    } else if (stickL > DEADZONE && stickR < -DEADZONE) {
+      // both UP -> forward
+      pulseL = MAX_US;
+      pulseR = MAX_US;
+    } else if (stickL < -DEADZONE && stickR > DEADZONE) {
+      // both DOWN -> backward
+      pulseL = MIN_US;
+      pulseR = MIN_US;
+    }else {
+      // conflicting directions (e.g., one up, one down) -> stop (or choose your own behavior)
+      pulseL = NEUTRAL_US;
+      pulseR = NEUTRAL_US;
+    }
+  }
+  // -------- Priority 2: SINGLE STICK (other must be neutral) --------
+  else if (!L_neutral && R_neutral) {
+    // left stick only -> left servo
+    pulseL = (stickL > 0) ? MAX_US : MIN_US;
     pulseR = NEUTRAL_US;
   }
-  else if (!L_neutral && R_neutral && stickL < -DEADZONE) {   // left down
-    pulseL = MIN_US;   
-    pulseR = NEUTRAL_US;       
+  else if (!R_neutral && L_neutral) {
+    // right stick only -> right servo
+    pulseR = (stickR > 0) ? MIN_US : MAX_US;
+    pulseL = NEUTRAL_US;
   }
-  else if (!R_neutral && L_neutral && stickR > DEADZONE) {    // right up
-    pulseR = MAX_US; 
-    pulseL = NEUTRAL_US;      
-  }
-  else if (!R_neutral && L_neutral && stickR < -DEADZONE) {   // right down
-    pulseR = MIN_US; 
-    pulseL = NEUTRAL_US;      
-  }
+  // -------- Priority 3: both neutral -> stop --------
   else {
-    pulseL = NEUTRAL_US;    // anything else → stop both
+    pulseL = NEUTRAL_US;
     pulseR = NEUTRAL_US;
   }
 
-  // Debug print (both sides for clarity)
-  Serial.printf("L: %4d -> %4d us | R: %4d -> %4d us\n", stickL, pulseL, stickR, pulseR);
-
+  // Send pulses
   servoR.writeMicroseconds(pulseR);
   servoL.writeMicroseconds(pulseL);
+
+  // Debug print
+  Serial.printf("L:%4d (-> %4dus)  |  R:%4d (-> %4dus)\n", stickL, pulseL, stickR, pulseR);
 
   delay(10);
 }
