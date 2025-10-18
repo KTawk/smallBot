@@ -130,14 +130,14 @@ void loop() {
   // --- GRIPPER CONTROL ---
   // --- R2 increases: move → 180° (OPEN FROM A GIVEN ANGLE) ---
   if (r2 > gripperLastR2 && r2 > 20) {
-    gripper.write(180);
+    gripper.write(60);
     Serial.print("R2 = "); Serial.print(r2);
     //Serial.print("  → Servo angle = "); Serial.println(servoAngle);
   }
 
   // --- L2 increases: move 180° → 0° (CLOSE)---
   else if (l2 > gripperLastL2 && l2 > 20) {
-    gripperAngle = map(l2, 20, 255, 180, 0);
+    gripperAngle = map(l2, 20, 255, 60, 0);
     gripper.write(gripperAngle);
     Serial.print("L2 = "); Serial.print(l2);
     Serial.print("  → Servo angle = "); Serial.println(gripperAngle);
