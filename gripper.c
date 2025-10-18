@@ -40,7 +40,7 @@ void loop() {
 
   if (!PS4.isConnected()) {
     // Optional: move to a known-safe angle here if you prefer
-    delay(1);
+    delay(10);
     return;
   }
 
