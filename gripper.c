@@ -5,7 +5,7 @@
 #define SERVO_PIN 18
 #define MIN_ANGLE 5            // safer mechanical limits (adjust if tested)
 #define MAX_ANGLE 175
-#define TRIGGER_MAX_DEG_PER_S 540   // raise/lower to taste
+#define TRIGGER_MAX_DEG_PER_S 100   // raise/lower to taste
 #define DEADZONE 12                 // ignore tiny trigger noise (0..255)
 
 // State
