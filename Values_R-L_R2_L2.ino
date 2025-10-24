@@ -1,6 +1,20 @@
 #include <Bluepad32.h>
-
+#include <Arduino.h>
+#include <ESP32Servo.h>
 ControllerPtr myControllers[BP32_MAX_GAMEPADS];
+
+#define SERVO_PIN 18
+#define MIN_ANGLE 5            // safer mechanical limits (adjust if tested)
+#define MAX_ANGLE 175
+#define TRIGGER_MAX_DEG_PER_S 100   // raise/lower to taste
+#define DEADZONE 12        
+
+
+// State
+Servo gripper;
+float angleDeg = (MIN_ANGLE + MAX_ANGLE) * 0.5f;
+uint32_t lastMs = 0;
+         // ignore tiny trigger noise (0..255)
 
 void onConnectedController(ControllerPtr ctl) {
   for (int i = 0; i < BP32_MAX_GAMEPADS; i++) {
@@ -51,11 +65,62 @@ void setup() {
 
   BP32.setup(&onConnectedController, &onDisconnectedController);
   BP32.forgetBluetoothKeys();  // optional: clear old pairings
+
+  // ESP32Servo best-practice setup
+  ESP32PWM::allocateTimer(0);
+  ESP32PWM::allocateTimer(1);
+  ESP32PWM::allocateTimer(2);
+  ESP32PWM::allocateTimer(3);
+  gripper.setPeriodHertz(50);                 // 50 Hz for servos
+  gripper.attach(SERVO_PIN, 500, 2500);       // widen if your servo supports it
+
+  gripper.write((int)round(angleDeg));
+  lastMs = millis();
 }
 
 void loop() {
+  uint32_t now = millis();
+  float dt = (now - lastMs) / 1000.0f;
+  lastMs = now;
+
+  // Cap dt to avoid big jumps after stalls
+  if (dt > 0.05f) dt = 0.05f; // treat anything >50 ms as 50 ms
   if (BP32.update())
     processControllers();
 
   delay(100);
+
+  // Find connected controller
+  ControllerPtr ctl = nullptr;
+  for (auto c : myControllers) {
+    if (c && c->isConnected()) {
+      ctl = c;
+      break;
+    }
+  }
+
+  if (!ctl)
+    return; // no controller connected
+
+  // Proportional trigger control with deadzone
+  int r2 = ctl->throttle(); // open
+  int l2 = ctl->brake();    // close
+
+  if (r2 > DEADZONE || l2 > DEADZONE) {
+    float openSpd  = map(r2, DEADZONE, 1020, 0, TRIGGER_MAX_DEG_PER_S);
+    float closeSpd = map(l2, DEADZONE, 1020, 0, TRIGGER_MAX_DEG_PER_S);
+    if (openSpd < 0) openSpd = 0;
+    if (closeSpd < 0) closeSpd = 0;
+
+    float net = openSpd - closeSpd;
+    angleDeg = constrain(angleDeg + net * dt, MIN_ANGLE, MAX_ANGLE);
+  }
+
+  static float lastCmd = -999;
+  if (fabs(angleDeg - lastCmd) >= 0.5f) {
+    gripper.write((int)round(angleDeg));
+    lastCmd = angleDeg;
+  }
+  delay(2);
 }
+
